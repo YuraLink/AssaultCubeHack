@@ -157,6 +157,37 @@ enum
     S_NULL
 };
 
+enum
+{
+    SV_SERVINFO = 0, SV_SERVINFO_RESPONSE, SV_SERVINFO_CONTD, SV_WELCOME, SV_INITCLIENT, SV_POS, SV_POSC, SV_POSC2, SV_POSC3, SV_POSC4, SV_POSN, SV_TEXT, SV_TEAMTEXT, SV_TEXTME, SV_TEAMTEXTME, SV_TEXTPRIVATE,
+    SV_SOUND, SV_VOICECOM, SV_VOICECOMTEAM, SV_CDIS,
+    SV_SHOOT, SV_EXPLODE, SV_SUICIDE, SV_AKIMBO, SV_RELOAD,
+    SV_GIBDIED, SV_DIED, SV_GIBDAMAGE, SV_DAMAGE, SV_HITPUSH, SV_SHOTFX, SV_THROWNADE,
+    SV_TRYSPAWN, SV_SPAWNSTATE, SV_SPAWN, SV_SPAWNDENY, SV_FORCEDEATH, SV_RESUME,
+    SV_DISCSCORES, SV_TIMEUP, SV_EDITENT, SV_ITEMACC,
+    SV_MAPCHANGE, SV_ITEMSPAWN, SV_ITEMPICKUP,
+    SV_PING, SV_PONG, SV_CLIENTPING,
+    SV_EDITMODE, SV_EDITXY, SV_EDITARCH, SV_EDITBLOCK, SV_EDITD, SV_EDITE, SV_NEWMAP,
+    SV_SENDMAP, SV_RECVMAP, SV_REMOVEMAP,
+    SV_SERVMSG, SV_SERVMSGVERB, SV_ITEMLIST, SV_WEAPCHANGE, SV_PRIMARYWEAP,
+    SV_FLAGACTION, SV_FLAGINFO, SV_FLAGMSG, SV_FLAGCNT,
+    SV_ARENAWIN,
+    SV_SETADMIN, SV_SERVOPINFO,
+    SV_CALLVOTE, SV_CALLVOTESUC, SV_CALLVOTEERR, SV_VOTE, SV_VOTERESULT,
+    SV_SETTEAM, SV_TEAMDENY, SV_SERVERMODE,
+    SV_IPLIST, SV_SPECTCN,
+    SV_LISTDEMOS, SV_SENDDEMOLIST, SV_GETDEMO, SV_SENDDEMO, SV_DEMOPLAYBACK,
+    SV_CONNECT,
+    SV_SWITCHNAME, SV_SWITCHSKIN, SV_SWITCHTEAM,
+    SV_CLIENT,
+    SV_EXTENSION,
+    SV_MAPIDENT, SV_DEMOCHECKSUM, SV_DEMOSIGNATURE,
+    SV_PAUSEMODE,
+    SV_GETVITA, SV_VITADATA,
+    SV_NUM
+};
+
+
 struct animstate                                // used for animation blending of animated characters
 {
     int anim, frame, range, basetime;
@@ -1334,6 +1365,42 @@ struct sqr
     uchar tag;                  // used by triggers
     uchar visible;              // temporarily used to flag the visibility of a cube (INVISWTEX, INVISUTEX, INVISIBLE)
     uchar reserved;
+};
+
+struct ivec
+{
+    union
+    {
+        struct { int x, y, z; };
+        int v[3];
+    };
+
+    ivec() {}
+    ivec(const vec &v) : x(int(v.x)), y(int(v.y)), z(int(v.z)) {}
+    ivec(int a, int b, int c) : x(a), y(b), z(c) {}
+
+    vec tovec() const { return vec(x, y, z); }
+
+    int &operator[](int i)       { return v[i]; }
+    int  operator[](int i) const { return v[i]; }
+
+    bool operator==(const ivec &v) const { return x==v.x && y==v.y && z==v.z; }
+    bool operator!=(const ivec &v) const { return x!=v.x || y!=v.y || z!=v.z; }
+    ivec &mul(int n) { x *= n; y *= n; z *= n; return *this; }
+    ivec &div(int n) { x /= n; y /= n; z /= n; return *this; }
+    ivec &add(int n) { x += n; y += n; z += n; return *this; }
+    ivec &sub(int n) { x -= n; y -= n; z -= n; return *this; }
+    ivec &add(const ivec &v) { x += v.x; y += v.y; z += v.z; return *this; }
+    ivec &sub(const ivec &v) { x -= v.x; y -= v.y; z -= v.z; return *this; }
+    ivec &mask(int n) { x &= n; y &= n; z &= n; return *this; }
+    ivec &cross(const ivec &a, const ivec &b) { x = a.y*b.z-a.z*b.y; y = a.z*b.x-a.x*b.z; z = a.x*b.y-a.y*b.x; return *this; }
+    int dot(const ivec &o) const { return x*o.x + y*o.y + z*o.z; }
+};
+
+struct hitmsg
+{
+    int target, lifesequence, info;
+    ivec dir;
 };
 
 #endif // SDK_H

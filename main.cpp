@@ -17,18 +17,19 @@
 #include <glm/gtc/type_ptr.hpp>
 #include <cmath>
 #include <ft2build.h>
+#include <filesystem>
+#include <vector>
 #include FT_FREETYPE_H
 #include FT_GLYPH_H
 
 #include "sdk.h"
 
-struct Character {
-    unsigned int TextureID; // ID handle of the glyph texture
-    glm::ivec2   Size;      // Size of glyph
-    glm::ivec2   Bearing;   // Offset from baseline to left/top of glyph
-    unsigned int Advance;   // Horizontal offset to advance to next glyph
+struct grafic_character {
+    unsigned int texture_id;
+    glm::ivec2   size;
+    glm::ivec2   bearing;
+    unsigned int advance;
 };
-
 
 struct mmaped_elf_node
 {
@@ -61,10 +62,13 @@ SDL_GLContext original_context = nullptr;
 SDL_GLContext user_context = nullptr;
 
 vector<entity>* ents = nullptr;
+//vector<hitmsg>* hit_array = nullptr;
+
+void (*addmsg) (int type, const char *fmt, ...) = nullptr;
+
 vector<playerent*>* players = nullptr;
 glmatrixf* modelviewproj = nullptr;
 glmatrixf* projmatrix = nullptr;
-playerent* local_player = nullptr;
 
 typedef int          (*sdl_poll_event_ptr)      (SDL_Event * event);
 typedef float          (*sdl_sinf_ptr)        (float value);
@@ -83,25 +87,51 @@ sdl_get_current_ptr sdl_get_current = nullptr;
 sdl_swap_buffer_ptr sdl_swap_buffer_original = nullptr;
 
 int64_t* player1_field = 0;
+int64_t* world_field = 0;
+int32_t* sfactor = 0;
+
+const vec frend_color(0.0f, 1.0f, 0.0f);
+const vec enemy_color(1.0f, 0.0f, 0.0f);
+
+const char* flag_str = "flag";
+const vec flag_color(1.0f, 1.0f, 1.0f);
+
+const char* health_str = "health";
+const vec health_color(1.0f, 1.0f, 0.0f);
+
+const char* clips_str = "clips";
+const vec clips_color(0.0f, 1.0f, 1.0f);
+
+const char* ammo_str = "ammo";
+const vec ammo_color(0.0f, 1.0f, 1.0f);
+
+const char* grenade_str = "grenade";
+const vec grenade_color(1.0, 0.0, 1.0);
+
+const char* helmet_str = "helmet";
+const vec helmet_color(1.0, 0.0, 1.0);
+
+const char* armour_str = "armour";
+const vec armour_color(1.0, 0.0, 1.0);
+
+const char* akimbo_str = "akimbo";
+const vec akimbo_color(1.0, 0.0, 1.0);
+
+struct esp_config
+{
+    bool health;
+    bool ammo;
+    bool armour;
+    bool clips;
+    bool flag;
+    bool akimbo;
+    bool granade;
+    bool helmet;
+    bool player;
+} esp_config;
 
 
-void swap_buffer_handler(SDL_Window* window);
-
-int hook_global_offset_table(struct dl_phdr_info *info, size_t size, void *data);
-
-struct mmaped_elf_node* search_map_file(const char* const path, struct mmaped_elf_node* begin);
-
-int add_file_to_map_list(const char* const path, struct mmaped_elf_node** begin, void** map_elf);
-
-int resolve_symtab_symbol(struct dl_phdr_info *info, size_t size, void *data);
-
-bool world_to_screen(vec pos, vec &screen, float matrix[16], int windowWidth, int windowHeight);
-
-int sdl_poll_event_handler(SDL_Event* event);
-
-void render_text(GLint program, std::string text, float x, float y, float scale, glm::vec3 color);
-
-GLint load_program_shader(std::string& vertex_shader_code, std::string& fragment_shader_code);
+std::map<GLchar, grafic_character> characters_cache;
 
 std::string vshader =
         "#version 330 core \n"
@@ -129,8 +159,27 @@ std::string fshader =
             "color = vec4(textColor, 1.0) * sampled; \n"
         "}";
 
-FT_Library ft;
-FT_Face face;
+void swap_buffer_handler(SDL_Window* window);
+
+int hook_global_offset_table(struct dl_phdr_info *info, size_t size, void *data);
+
+struct mmaped_elf_node* search_map_file(const char* const path, struct mmaped_elf_node* begin);
+
+int add_file_to_map_list(const char* const path, struct mmaped_elf_node** begin, void** map_elf);
+
+int resolve_symtab_symbol(struct dl_phdr_info *info, size_t size, void *data);
+
+bool world_to_screen(vec pos, vec &screen, float matrix[16], int windowWidth, int windowHeight);
+
+int sdl_poll_event_handler(SDL_Event* event);
+
+void render_text(GLint program, std::string& text, float x, float y, float scale, const vec* color);
+
+GLint load_program_shader(std::string& vertex_shader_code, std::string& fragment_shader_code);
+
+int load_font_ascii(FT_Face& face, std::map<GLchar, grafic_character>& cache);
+
+char* get_path_exutable();
 
 __attribute__((constructor)) void entry()
 {
@@ -149,7 +198,11 @@ __attribute__((constructor)) void entry()
     struct resolve_sym_info players_sym = {"linux_64_client", "players", NULL};
     struct resolve_sym_info player1_sym = {"linux_64_client", "player1", NULL};
     struct resolve_sym_info ents_sym = {"linux_64_client", "ents", NULL};
+    struct resolve_sym_info world_sym = {"linux_64_client", "world", NULL};
+    struct resolve_sym_info sfactor_sym = {"linux_64_client", "sfactor", NULL};
 
+    dl_iterate_phdr(resolve_symtab_symbol, &sfactor_sym);
+    dl_iterate_phdr(resolve_symtab_symbol, &world_sym);
     dl_iterate_phdr(resolve_symtab_symbol, &camera_sym);
     dl_iterate_phdr(resolve_symtab_symbol, &projmatrix_sym);
     dl_iterate_phdr(resolve_symtab_symbol, &players_sym);
@@ -171,9 +224,11 @@ __attribute__((constructor)) void entry()
     player1_field = reinterpret_cast<int64_t*>(player1_sym.address_symbol);
     ents = reinterpret_cast<vector<entity>*>(ents_sym.address_symbol);
     projmatrix = reinterpret_cast<glmatrixf*>(projmatrix_sym.address_symbol);
+    world_field = reinterpret_cast<int64_t*>(world_sym.address_symbol);
+    sfactor = reinterpret_cast<int32_t*>(sfactor_sym.address_symbol);
 
-    assert(FT_Init_FreeType(&ft) == 0);
-
+    assert(sfactor_sym.address_symbol != nullptr);
+    assert(world_sym.address_symbol != nullptr);
     assert(projmatrix_sym.address_symbol != nullptr);
     assert(players_sym.address_symbol != nullptr);
     assert(camera_sym.address_symbol != nullptr);
@@ -183,87 +238,109 @@ __attribute__((constructor)) void entry()
 
 int sdl_poll_event_handler(SDL_Event* event)
 {
+    playerent* local_player = reinterpret_cast<playerent*>(*player1_field);
     int ret = sdl_poll_event_original(event);
 
-    if (local_player->state == CS_DEAD || local_player->state == CS_SPAWNING || local_player->state == CS_SPECTATE) {
+    if (event->key.keysym.sym == SDLK_0 && event->type == SDL_KEYUP)
+        esp_config.health = !esp_config.health;
+
+    else if (event->key.keysym.sym == SDLK_1 && event->type == SDL_KEYUP)
+        esp_config.armour = !esp_config.armour;
+
+    else if (event->key.keysym.sym == SDLK_2 && event->type == SDL_KEYUP)
+        esp_config.helmet = !esp_config.helmet;
+
+    else if (event->key.keysym.sym == SDLK_3 && event->type == SDL_KEYUP)
+        esp_config.granade = !esp_config.granade;
+
+    else if (event->key.keysym.sym == SDLK_4 && event->type == SDL_KEYUP)
+        esp_config.akimbo = !esp_config.akimbo;
+
+    else if (event->key.keysym.sym == SDLK_5 && event->type == SDL_KEYUP)
+        esp_config.flag = !esp_config.flag;
+
+    else if (event->key.keysym.sym == SDLK_6 && event->type == SDL_KEYUP)
+        esp_config.player = !esp_config.player;
+
+    else if (event->key.keysym.sym == SDLK_7 && event->type == SDL_KEYUP)
+        esp_config.ammo = !esp_config.ammo;
+
+    if (local_player->state != CS_ALIVE)
         return ret;
-    }
-
-    if (event->key.keysym.sym == SDLK_r && event->type == SDL_KEYDOWN)
-            local_player->state = CS_EDITING;
-
+    else if (event->key.keysym.sym == SDLK_r && event->type == SDL_KEYDOWN)
+            local_player->spectatemode = SM_FLY;
     else if (event->key.keysym.sym == SDLK_r && event->type == SDL_KEYUP)
-            local_player->state = CS_ALIVE;
+            local_player->spectatemode = SM_NONE;
 
     return ret;
 }
 
-glm::mat4 projection;
-GLint program = 0;
-std::string strd = "health";
-std::map<GLchar, Character> Characters;
+float distance_vec(vec& player, vec& target)
+{
+    return sqrt(pow(target.x - player.x, 2) +
+                pow(target.y - player.y, 2) +
+                pow(target.z - player.z, 2) * 1.0);
+}
+
+__inline__ double fast_divide( double y, double x) {
+    union {
+        double dbl;
+        unsigned long long ull;
+    } u;
+
+    u.dbl = x;
+    u.ull = ( 0xbfcdd6a18f6a6f52ULL - u.ull ) >> (unsigned char)1;
+
+    u.dbl *= u.dbl;
+    return u.dbl * y;
+}
+
+double fast_sin(double x)
+{
+  const double A = 4.0 / (M_PI * M_PI);
+  const double P =  0.2248391013559941;
+  double y = A * x * ( M_PI - x );
+  return y * (( 1 - P) + y * P );
+}
 
 void swap_buffer_handler(SDL_Window* window)
 {
-    local_player = reinterpret_cast<playerent*>(*player1_field);
+    static GLint program = 0;
+    playerent* local_player = reinterpret_cast<playerent*>(*player1_field);
+    sqr* world = reinterpret_cast<sqr*>(*world_field);
 
     if (!user_context)
     {
+        FT_Library ft;
+        FT_Face face;
         assert(glewInit() == GLEW_OK);
         sdl_get_window_size(window, &width, &height);
         original_context = sdl_get_current(window);
         user_context = sdl_create_contex(window);
         sdl_make_current(window, user_context);
 
+        program = load_program_shader(vshader, fshader);
+        assert(program != -1);
+
+        assert(FT_Init_FreeType(&ft) == 0);
+
+        std::filesystem::path path_font = std::filesystem::current_path();
+        path_font += "/esp.ttf";
+        std::string tmp_str(path_font);
+        assert(FT_New_Face(ft, tmp_str.c_str(), 0, &face) == 0);
+
+        FT_Set_Pixel_Sizes(face, 0, 48);
+        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
+        assert(load_font_ascii(face, characters_cache) == 0);
+
+        glm::mat4 projection = glm::ortho(0.0f, static_cast<float>(width), 0.0f, static_cast<float>(height));
+        glUseProgram(program);
+        glUniformMatrix4fv(glGetUniformLocation(program, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
+
         glEnable(GL_CULL_FACE);
         glEnable(GL_BLEND);
         glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-        program = load_program_shader(vshader, fshader);
-        assert(program != -1);
-
-        assert(FT_New_Face(ft, "/home/youngnight/.fonts/times-new-roman.ttf", 0, &face) == 0);
-        FT_Set_Pixel_Sizes(face, 0, 48);
-
-        glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
-
-        projection = glm::ortho(0.0f, static_cast<float>(width), 0.0f, static_cast<float>(height));
-
-        glUseProgram(program);
-        glUniformMatrix4fv(glGetUniformLocation(program, "projection"), 1, GL_FALSE, glm::value_ptr(projection));
-
-        for (unsigned char c = 0; c < 128; c++)
-        {
-            assert(FT_Load_Char(face, c, FT_LOAD_RENDER) == 0);
-
-            unsigned int texture;
-            glGenTextures(1, &texture);
-            glBindTexture(GL_TEXTURE_2D, texture);
-            glTexImage2D(
-                        GL_TEXTURE_2D,
-                        0,
-                        GL_RED,
-                        face->glyph->bitmap.width,
-                        face->glyph->bitmap.rows,
-                        0,
-                        GL_RED,
-                        GL_UNSIGNED_BYTE,
-                        face->glyph->bitmap.buffer
-                    );
-                    // set texture options
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-            glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-                    // now store character for later use
-            Character character = {
-                        texture,
-                        glm::ivec2(face->glyph->bitmap.width, face->glyph->bitmap.rows),
-                        glm::ivec2(face->glyph->bitmap_left, face->glyph->bitmap_top),
-                        static_cast<unsigned int>(face->glyph->advance.x)
-            };
-            Characters.insert(std::pair<char, Character>(c, character));
-        }
         glBindTexture(GL_TEXTURE_2D, 0);
         FT_Done_Face(face);
         FT_Done_FreeType(ft);
@@ -284,19 +361,93 @@ void swap_buffer_handler(SDL_Window* window)
     }
 
     for (int i = 0; i < ents->length(); i++) {
-        //playerent** player_array = players->buf;
         entity* ent = ents->getbuf();
 
-       if (ent[i].type != I_HEALTH)
-            continue;
+        const char* name_ent;
+        const vec* color_ent;
+        vec result (0, 0, 0);
 
-        vec pos (ent[i].x, ent[i].y, ent[i].z);
-        vec result;
+        uchar type = ent[i].type;
+        if (type == I_HEALTH && esp_config.health) {
+            color_ent = &health_color;
+            name_ent = health_str;
+        } else if (type == I_AMMO && esp_config.ammo) {
+            color_ent = &ammo_color;
+            name_ent = ammo_str;
+        } else if (type == I_AKIMBO && esp_config.akimbo) {
+            color_ent = &akimbo_color;
+            name_ent = akimbo_str;
+        } else if (type == I_HELMET && esp_config.helmet) {
+            color_ent = &helmet_color;
+            name_ent = helmet_str;
+        } else if (type == I_ARMOUR && esp_config.armour) {
+            color_ent = &armour_color;
+            name_ent = armour_str;
+        } else if (type == I_GRENADE && esp_config.granade) {
+            color_ent = &grenade_color;
+            name_ent = grenade_str;
+        } else if (type == CTF_FLAG && esp_config.flag) {
+            color_ent = &flag_color;
+            name_ent = flag_str;
+        } else {
+            continue;
+        }
+
+        if (!(ent[i].spawned)) {
+            continue;
+        }
+
+        float x = ent[i].x;
+        float y = ent[i].y;
+        float z = (float)(1 + sin(100.0f + x + y) / 20);
+        vec pos (x, y, z + SWS(world, (int) x, (int) y,  *sfactor)->floor);
 
         if(!world_to_screen(pos, result, modelviewproj->v, width, height))
             continue;
 
-        render_text(program, strd, result.x, result.y, 0.50f, glm::vec3(1.0f, 0.0f, 1.0f));
+        float distance = distance_vec(pos, local_player->o);
+        float scale = (float) fast_divide((double) 10.0f, (double) distance);
+
+        if (scale < 0.20f)
+            scale = 0.20f;
+
+        std::string tmp_name_ent(name_ent);
+        render_text(program, tmp_name_ent, result.x, result.y, scale, color_ent);
+    }
+
+    for (int i = 0; i < players->length(); i++) {
+        playerent** player_array = players->buf;
+        playerent* player = player_array[i];
+
+        if (!esp_config.player)
+            break;
+
+        if (player == nullptr)
+            continue;
+        else if (player->state != CS_ALIVE)
+            continue;
+
+        vec pos (player->o.x, player->o.y, player->o.z);
+        vec result;
+
+
+        if(!world_to_screen(pos, result, modelviewproj->v, width, height))
+            continue;
+
+        float distance = distance_vec(player->o, local_player->o);
+        float scale = (float) fast_divide((double) 10.0f, (double) distance);
+
+        if (scale < 0.20f)
+            scale = 0.20f;
+
+        const vec* render_color;
+        if (local_player->team == player->team)
+            render_color = &frend_color;
+        else
+            render_color = &enemy_color;
+
+        std::string tmp_name(player->name);
+        render_text(program, tmp_name, result.x, result.y, scale, render_color);
     }
 
     sdl_make_current(window, original_context);
@@ -305,7 +456,6 @@ void swap_buffer_handler(SDL_Window* window)
 
 bool world_to_screen(vec pos, vec &screen, float matrix[16], int windowWidth, int windowHeight)
 {
-    //Matrix-vector Product, multiplying world(eye) coordinates by projection matrix = clipCoords
     vec4 clipCoords;
     clipCoords.x = pos.x * matrix[0] + pos.y * matrix[4] + pos.z * matrix[8] + matrix[12];
     clipCoords.y = pos.x * matrix[1] + pos.y * matrix[5] + pos.z * matrix[9] + matrix[13];
@@ -315,15 +465,13 @@ bool world_to_screen(vec pos, vec &screen, float matrix[16], int windowWidth, in
     if (clipCoords.w < 0.1f)
         return false;
 
-    //perspective division, dividing by clip.W = Normalized Device Coordinates
     vec NDC;
     NDC.x = clipCoords.x / clipCoords.w;
     NDC.y = clipCoords.y / clipCoords.w;
     NDC.z = clipCoords.z / clipCoords.w;
 
-        //Transform to window coordinates
     screen.x = (windowWidth / 2 * NDC.x) + (NDC.x + windowWidth / 2);
-    screen.y = -(windowHeight / 2 * NDC.y) + (NDC.y + windowHeight / 2);
+    screen.y = (windowHeight / 2 * NDC.y) + (NDC.y + windowHeight / 2);
     return true;
 }
 
@@ -363,26 +511,70 @@ GLint load_program_shader(std::string& vertex_shader_code, std::string& fragment
     return shader_program;
 }
 
-void render_text(GLint program, std::string text, float x, float y, float scale, glm::vec3 color)
+int load_font_ascii(FT_Face& face, std::map<GLchar, grafic_character>& cache)
 {
-    // activate corresponding render state
+    for (unsigned char c = 0; c < 128; c++)
+    {
+        if(FT_Load_Char(face, c, FT_LOAD_RENDER) != 0)
+            return -1;
+
+        unsigned int texture;
+        glGenTextures(1, &texture);
+        glBindTexture(GL_TEXTURE_2D, texture);
+        glTexImage2D(
+                    GL_TEXTURE_2D,
+                    0,
+                    GL_RED,
+                    face->glyph->bitmap.width,
+                    face->glyph->bitmap.rows,
+                    0,
+                    GL_RED,
+                    GL_UNSIGNED_BYTE,
+                    face->glyph->bitmap.buffer
+                    );
+
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        grafic_character grafic_char = {
+                    texture,
+                    glm::ivec2(face->glyph->bitmap.width, face->glyph->bitmap.rows),
+                    glm::ivec2(face->glyph->bitmap_left, face->glyph->bitmap_top),
+                    static_cast<unsigned int>(face->glyph->advance.x)
+        };
+        cache.insert(std::pair<char, grafic_character>(c, grafic_char));
+    }
+    return 0;
+}
+
+void render_text(GLint program, std::string& text, float x, float y, float scale, const vec* color)
+{
+    std::vector<grafic_character> grafic_text(text.size());
     glUseProgram(program);
-    glUniform3f(glGetUniformLocation(program, "textColor"), color.x, color.y, color.z);
+    glUniform3f(glGetUniformLocation(program, "textColor"), color->x, color->y, color->z);
     glActiveTexture(GL_TEXTURE0);
     glBindVertexArray(VAO);
 
-    // iterate through all characters
+    int i = 0;
     std::string::const_iterator c;
-    for (c = text.begin(); c != text.end(); c++)
+    for (c = text.begin(); c != text.end(); c++, i++)
     {
-        Character ch = Characters[*c];
+        grafic_text[i] = characters_cache[*c];
+        x -= ((characters_cache[*c].advance >> 6) * scale) / 2;
+    }
 
-        float xpos = x + ch.Bearing.x * scale;
-        float ypos = y - (ch.Size.y - ch.Bearing.y) * scale;
+    for (int i = 0; i < grafic_text.size(); i++)
+    {
+        grafic_character ch = grafic_text[i];
 
-        float w = ch.Size.x * scale;
-        float h = ch.Size.y * scale;
-        // update VBO for each character
+        float xpos = x + ch.bearing.x * scale;
+        float ypos = y - (ch.size.y - ch.bearing.y) * scale;
+
+        float w = ch.size.x * scale;
+        float h = ch.size.y * scale;
+
         float vertices[6][4] = {
             { xpos,     ypos + h,   0.0f, 0.0f },
             { xpos,     ypos,       0.0f, 1.0f },
@@ -392,17 +584,17 @@ void render_text(GLint program, std::string text, float x, float y, float scale,
             { xpos + w, ypos,       1.0f, 1.0f },
             { xpos + w, ypos + h,   1.0f, 0.0f }
         };
-        // render glyph texture over quad
-        glBindTexture(GL_TEXTURE_2D, ch.TextureID);
-        // update content of VBO memory
+
+        glBindTexture(GL_TEXTURE_2D, ch.texture_id);
+
         glBindBuffer(GL_ARRAY_BUFFER, VBO);
-        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(vertices), vertices); // be sure to use glBufferSubData and not glBufferData
+        glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(vertices), vertices);
 
         glBindBuffer(GL_ARRAY_BUFFER, 0);
-        // render quad
+
         glDrawArrays(GL_TRIANGLES, 0, 6);
-        // now advance cursors for next glyph (note that advance is number of 1/64 pixels)
-        x += (ch.Advance >> 6) * scale; // bitshift by 6 to get value in pixels (2^6 = 64 (divide amount of 1/64th pixels by 64 to get amount of pixels))
+
+        x += (ch.advance >> 6) * scale;
     }
     glBindVertexArray(0);
     glBindTexture(GL_TEXTURE_2D, 0);
