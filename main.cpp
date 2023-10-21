@@ -241,29 +241,32 @@ int sdl_poll_event_handler(SDL_Event* event)
     playerent* local_player = reinterpret_cast<playerent*>(*player1_field);
     int ret = sdl_poll_event_original(event);
 
-    if (event->key.keysym.sym == SDLK_0 && event->type == SDL_KEYUP)
+    if (event->key.keysym.sym == SDLK_1 && event->type == SDL_KEYUP)
         esp_config.health = !esp_config.health;
 
-    else if (event->key.keysym.sym == SDLK_1 && event->type == SDL_KEYUP)
+    else if (event->key.keysym.sym == SDLK_2 && event->type == SDL_KEYUP)
         esp_config.armour = !esp_config.armour;
 
-    else if (event->key.keysym.sym == SDLK_2 && event->type == SDL_KEYUP)
+    else if (event->key.keysym.sym == SDLK_3 && event->type == SDL_KEYUP)
         esp_config.helmet = !esp_config.helmet;
 
-    else if (event->key.keysym.sym == SDLK_3 && event->type == SDL_KEYUP)
+    else if (event->key.keysym.sym == SDLK_4 && event->type == SDL_KEYUP)
         esp_config.granade = !esp_config.granade;
 
-    else if (event->key.keysym.sym == SDLK_4 && event->type == SDL_KEYUP)
+    else if (event->key.keysym.sym == SDLK_5 && event->type == SDL_KEYUP)
         esp_config.akimbo = !esp_config.akimbo;
 
-    else if (event->key.keysym.sym == SDLK_5 && event->type == SDL_KEYUP)
+    else if (event->key.keysym.sym == SDLK_6 && event->type == SDL_KEYUP)
         esp_config.flag = !esp_config.flag;
 
-    else if (event->key.keysym.sym == SDLK_6 && event->type == SDL_KEYUP)
+    else if (event->key.keysym.sym == SDLK_7 && event->type == SDL_KEYUP)
         esp_config.player = !esp_config.player;
 
-    else if (event->key.keysym.sym == SDLK_7 && event->type == SDL_KEYUP)
+    else if (event->key.keysym.sym == SDLK_8 && event->type == SDL_KEYUP)
         esp_config.ammo = !esp_config.ammo;
+
+    else if (event->key.keysym.sym == SDLK_9 && event->type == SDL_KEYUP)
+            esp_config.clips = !esp_config.clips;
 
     if (local_player->state != CS_ALIVE)
         return ret;
@@ -389,6 +392,9 @@ void swap_buffer_handler(SDL_Window* window)
         } else if (type == CTF_FLAG && esp_config.flag) {
             color_ent = &flag_color;
             name_ent = flag_str;
+        } else if (type == I_CLIPS && esp_config.clips) {
+            color_ent = &clips_color;
+            name_ent = clips_str;
         } else {
             continue;
         }
