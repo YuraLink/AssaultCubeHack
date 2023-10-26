@@ -57,12 +57,13 @@ struct hook_relocation_info
 
 unsigned int VAO, VBO;
 int width, height;
+int screen_center_x = 0;
+int screen_center_y = 0;
 
 SDL_GLContext original_context = nullptr;
 SDL_GLContext user_context = nullptr;
 
 vector<entity>* ents = nullptr;
-//vector<hitmsg>* hit_array = nullptr;
 
 void (*addmsg) (int type, const char *fmt, ...) = nullptr;
 
@@ -77,6 +78,7 @@ typedef void           (*sdl_make_current_ptr)    (SDL_Window * window, SDL_GLCo
 typedef void           (*sdl_get_window_size_ptr) (SDL_Window* window, int* w, int* h);
 typedef SDL_GLContext* (*sdl_create_contex_ptr)   (SDL_Window* window);
 typedef SDL_GLContext* (*sdl_get_current_ptr)     (SDL_Window* window);
+typedef void  (*shoot) (playerent *p, vec &targ);
 
 sdl_poll_event_ptr sdl_poll_event_original = nullptr;
 sdl_sinf_ptr sdl_sinf_original = nullptr;
@@ -85,10 +87,12 @@ sdl_get_window_size_ptr sdl_get_window_size = nullptr;
 sdl_create_contex_ptr sdl_create_contex = nullptr;
 sdl_get_current_ptr sdl_get_current = nullptr;
 sdl_swap_buffer_ptr sdl_swap_buffer_original = nullptr;
+shoot sendsht = nullptr;
 
-int64_t* player1_field = 0;
-int64_t* world_field = 0;
-int32_t* sfactor = 0;
+float_t* fov = nullptr;
+int64_t* player1_field = nullptr;
+int64_t* world_field = nullptr;
+int32_t* sfactor = nullptr;
 
 const vec frend_color(0.0f, 1.0f, 0.0f);
 const vec enemy_color(1.0f, 0.0f, 0.0f);
@@ -130,6 +134,11 @@ struct esp_config
     bool player;
 } esp_config;
 
+struct aimbot_config
+{
+    bool shoot;
+    int aimbot_fov;
+} aimbot_config;
 
 std::map<GLchar, grafic_character> characters_cache;
 
@@ -200,7 +209,12 @@ __attribute__((constructor)) void entry()
     struct resolve_sym_info ents_sym = {"linux_64_client", "ents", NULL};
     struct resolve_sym_info world_sym = {"linux_64_client", "world", NULL};
     struct resolve_sym_info sfactor_sym = {"linux_64_client", "sfactor", NULL};
+    struct resolve_sym_info sendshot_sym = {"linux_64_client", "_Z5shootP9playerentR3vec", NULL};
+    struct resolve_sym_info fov_sym = {"linux_64_client", "fov", NULL};
 
+
+    dl_iterate_phdr(resolve_symtab_symbol, &fov_sym);
+    dl_iterate_phdr(resolve_symtab_symbol, &sendshot_sym);
     dl_iterate_phdr(resolve_symtab_symbol, &sfactor_sym);
     dl_iterate_phdr(resolve_symtab_symbol, &world_sym);
     dl_iterate_phdr(resolve_symtab_symbol, &camera_sym);
@@ -226,7 +240,10 @@ __attribute__((constructor)) void entry()
     projmatrix = reinterpret_cast<glmatrixf*>(projmatrix_sym.address_symbol);
     world_field = reinterpret_cast<int64_t*>(world_sym.address_symbol);
     sfactor = reinterpret_cast<int32_t*>(sfactor_sym.address_symbol);
+    sendsht = reinterpret_cast<shoot>(sendshot_sym.address_symbol);
+    fov = reinterpret_cast<float_t*>(fov_sym.address_symbol);
 
+    assert(sendshot_sym.address_symbol != nullptr);
     assert(sfactor_sym.address_symbol != nullptr);
     assert(world_sym.address_symbol != nullptr);
     assert(projmatrix_sym.address_symbol != nullptr);
@@ -234,6 +251,7 @@ __attribute__((constructor)) void entry()
     assert(camera_sym.address_symbol != nullptr);
     assert(player1_sym.address_symbol != nullptr);
     assert(swap_buffer_handler != nullptr);
+    aimbot_config.aimbot_fov = 20;
 }
 
 int sdl_poll_event_handler(SDL_Event* event)
@@ -272,8 +290,12 @@ int sdl_poll_event_handler(SDL_Event* event)
         return ret;
     else if (event->key.keysym.sym == SDLK_r && event->type == SDL_KEYDOWN)
             local_player->spectatemode = SM_FLY;
+
     else if (event->key.keysym.sym == SDLK_r && event->type == SDL_KEYUP)
             local_player->spectatemode = SM_NONE;
+
+    else if (event->key.keysym.sym == SDLK_f && event->type == SDL_KEYDOWN)
+            aimbot_config.shoot = true;
 
     return ret;
 }
@@ -282,7 +304,7 @@ float distance_vec(vec& player, vec& target)
 {
     return sqrt(pow(target.x - player.x, 2) +
                 pow(target.y - player.y, 2) +
-                pow(target.z - player.z, 2) * 1.0);
+                pow(target.z - player.z, 2));
 }
 
 __inline__ double fast_divide( double y, double x) {
@@ -322,6 +344,9 @@ void swap_buffer_handler(SDL_Window* window)
         user_context = sdl_create_contex(window);
         sdl_make_current(window, user_context);
 
+        screen_center_x = width / 2;
+        screen_center_y = height / 2;
+
         program = load_program_shader(vshader, fshader);
         assert(program != -1);
 
@@ -357,13 +382,15 @@ void swap_buffer_handler(SDL_Window* window)
         glVertexAttribPointer(0, 4, GL_FLOAT, GL_FALSE, 4 * sizeof(float), 0);
         glBindBuffer(GL_ARRAY_BUFFER, 0);
         glBindVertexArray(0);
+
     }
     else
     {
         sdl_make_current(window, user_context);
     }
 
-    for (int i = 0; i < ents->length(); i++) {
+    for (int i = 0; i < ents->length(); i++)
+    {
         entity* ent = ents->getbuf();
 
         const char* name_ent;
@@ -371,35 +398,51 @@ void swap_buffer_handler(SDL_Window* window)
         vec result (0, 0, 0);
 
         uchar type = ent[i].type;
-        if (type == I_HEALTH && esp_config.health) {
+        if (type == I_HEALTH && esp_config.health)
+        {
             color_ent = &health_color;
             name_ent = health_str;
-        } else if (type == I_AMMO && esp_config.ammo) {
+        }
+        else if (type == I_AMMO && esp_config.ammo)
+        {
             color_ent = &ammo_color;
             name_ent = ammo_str;
-        } else if (type == I_AKIMBO && esp_config.akimbo) {
+        }
+        else if (type == I_AKIMBO && esp_config.akimbo)
+        {
             color_ent = &akimbo_color;
             name_ent = akimbo_str;
-        } else if (type == I_HELMET && esp_config.helmet) {
+        }
+        else if (type == I_HELMET && esp_config.helmet)
+        {
             color_ent = &helmet_color;
             name_ent = helmet_str;
-        } else if (type == I_ARMOUR && esp_config.armour) {
+        }
+        else if (type == I_ARMOUR && esp_config.armour)
+        {
             color_ent = &armour_color;
             name_ent = armour_str;
-        } else if (type == I_GRENADE && esp_config.granade) {
+        }
+        else if (type == I_GRENADE && esp_config.granade)
+        {
             color_ent = &grenade_color;
             name_ent = grenade_str;
-        } else if (type == CTF_FLAG && esp_config.flag) {
+        } else if (type == CTF_FLAG && esp_config.flag)
+        {
             color_ent = &flag_color;
             name_ent = flag_str;
-        } else if (type == I_CLIPS && esp_config.clips) {
+        } else if (type == I_CLIPS && esp_config.clips)
+        {
             color_ent = &clips_color;
             name_ent = clips_str;
-        } else {
+        }
+        else
+        {
             continue;
         }
 
-        if (!(ent[i].spawned)) {
+        if (!(ent[i].spawned))
+        {
             continue;
         }
 
@@ -408,7 +451,7 @@ void swap_buffer_handler(SDL_Window* window)
         float z = (float)(1 + sin(100.0f + x + y) / 20);
         vec pos (x, y, z + SWS(world, (int) x, (int) y,  *sfactor)->floor);
 
-        if(!world_to_screen(pos, result, modelviewproj->v, width, height))
+        if (!world_to_screen(pos, result, modelviewproj->v, width, height))
             continue;
 
         float distance = distance_vec(pos, local_player->o);
@@ -421,7 +464,9 @@ void swap_buffer_handler(SDL_Window* window)
         render_text(program, tmp_name_ent, result.x, result.y, scale, color_ent);
     }
 
-    for (int i = 0; i < players->length(); i++) {
+    for (int i = 0; i < players->length(); i++)
+    {
+        float lowestHypot = MAXFLOAT;
         playerent** player_array = players->buf;
         playerent* player = player_array[i];
 
@@ -436,9 +481,25 @@ void swap_buffer_handler(SDL_Window* window)
         vec pos (player->o.x, player->o.y, player->o.z);
         vec result;
 
-
-        if(!world_to_screen(pos, result, modelviewproj->v, width, height))
+        if (!world_to_screen(pos, result, modelviewproj->v, width, height))
             continue;
+
+        if (aimbot_config.shoot && player->team != local_player->team)
+        {
+            float multiplier = screen_center_x / int(*fov);
+            float size_aim_fov = (aimbot_config.aimbot_fov * multiplier);
+            int diff_x = screen_center_x - result.x;
+            int diff_y = screen_center_y - result.y;
+
+            float hypotenuse = sqrt((diff_x * diff_x) + (diff_y * diff_y));
+            if (hypotenuse < size_aim_fov && hypotenuse < lowestHypot) {
+                lowestHypot = hypotenuse;
+
+                local_player->attacking = true;
+                sendsht(local_player, player->o);
+                local_player->attacking = false;
+            }
+        }
 
         float distance = distance_vec(player->o, local_player->o);
         float scale = (float) fast_divide((double) 10.0f, (double) distance);
@@ -453,8 +514,10 @@ void swap_buffer_handler(SDL_Window* window)
             render_color = &enemy_color;
 
         std::string tmp_name(player->name);
+        tmp_name += " - " + std::to_string(player->health);
         render_text(program, tmp_name, result.x, result.y, scale, render_color);
     }
+    aimbot_config.shoot = false;
 
     sdl_make_current(window, original_context);
     sdl_swap_buffer_original(window);
